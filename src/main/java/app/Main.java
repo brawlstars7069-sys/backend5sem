@@ -2,9 +2,10 @@ package app;
 
 import app.domain.Model.ComputerType;
 import app.domain.Model.PlayerType;
-import app.http.ClubHandler;
+import app.http.ComputerHandler;
 import app.http.HttpHelper;
 import app.http.PingHandler;
+import app.http.PlayerHandler;
 import app.service.ClubService;
 import app.storage.ClubStorage;
 import com.sun.net.httpserver.HttpServer;
@@ -28,11 +29,15 @@ public class Main {
         HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
         server.setExecutor(Executors.newCachedThreadPool());
 
-        ClubHandler clubHandler = new ClubHandler(service);
         server.createContext("/ping", new PingHandler());
-        server.createContext("/api/computers", clubHandler);
-        server.createContext("/api/players", clubHandler);
-        server.createContext("/api/sessions", clubHandler);
+
+        ComputerHandler computerHandler = new ComputerHandler(service);
+        server.createContext("/api/computers", computerHandler);
+        server.createContext("/computers", computerHandler);
+
+        PlayerHandler playerHandler = new PlayerHandler(service);
+        server.createContext("/api/players", playerHandler);
+        server.createContext("/players", playerHandler);
 
         // Главная страница / и fallback для неизвестных маршрутов
         server.createContext("/", exchange -> {
@@ -44,8 +49,7 @@ public class Main {
                         "endpoints", Map.of(
                                 "ping", "http://localhost:" + PORT + "/ping",
                                 "computers", "http://localhost:" + PORT + "/api/computers",
-                                "players", "http://localhost:" + PORT + "/api/players",
-                                "sessions", "http://localhost:" + PORT + "/api/sessions"
+                                "players", "http://localhost:" + PORT + "/api/players"
                         )
                 );
                 HttpHelper.sendJson(exchange, 200, welcome);

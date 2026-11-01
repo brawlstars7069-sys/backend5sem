@@ -86,10 +86,43 @@ public class HttpHelper {
     }
 
     public static Long parseId(String s) {
+        if (s == null || s.isBlank()) {
+            throw new ValidationException("ID не может быть пустым");
+        }
         try {
-            return Long.parseLong(s);
+            return Long.parseLong(s.trim());
         } catch (NumberFormatException e) {
             throw new ValidationException("ID должен быть числом: '" + s + "'");
+        }
+    }
+
+    public static Boolean parseBooleanStrict(String val, String paramName) {
+        if (val == null || val.isBlank()) return null;
+        String trimmed = val.trim();
+        if ("true".equalsIgnoreCase(trimmed)) {
+            return Boolean.TRUE;
+        } else if ("false".equalsIgnoreCase(trimmed)) {
+            return Boolean.FALSE;
+        } else {
+            throw new ValidationException("Параметр '" + paramName + "' должен быть 'true' или 'false' (получено: '" + val + "')");
+        }
+    }
+
+    public static Double parseDoubleStrict(String val, String paramName) {
+        if (val == null || val.isBlank()) return null;
+        try {
+            return Double.parseDouble(val.trim());
+        } catch (NumberFormatException e) {
+            throw new ValidationException("Параметр '" + paramName + "' должен быть числом: '" + val + "'");
+        }
+    }
+
+    public static <E extends Enum<E>> E parseEnumStrict(Class<E> enumClass, String val, String paramName) {
+        if (val == null || val.isBlank()) return null;
+        try {
+            return Enum.valueOf(enumClass, val.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new ValidationException("Недопустимое значение параметра '" + paramName + "': '" + val + "'");
         }
     }
 }
