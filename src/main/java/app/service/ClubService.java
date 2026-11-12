@@ -8,35 +8,40 @@ import app.domain.Model.ComputerStatus;
 import app.domain.Model.ComputerType;
 import app.domain.Model.Player;
 import app.domain.Model.PlayerType;
-import app.storage.ClubStorage;
+import app.repository.ClubRepository;
+import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+@Service
 public class ClubService {
 
-    private final ClubStorage storage;
+    private final ClubRepository repository;
 
-    public ClubService(ClubStorage storage) {
-        this.storage = storage;
+    public ClubService(ClubRepository repository) {
+        this.repository = repository;
     }
 
     // --- Управление компьютерами ---
 
     public synchronized Computer createComputer(String name, ComputerType type, Double hourlyRate) {
         validateComputer(name, type, hourlyRate);
-        if (storage.findComputerByName(name).isPresent()) {
+        if (repository.findComputerByName(name).isPresent()) {
             throw new ConflictException("Компьютер с именем '" + name.trim() + "' уже существует в Zombie Playa");
         }
-        return storage.saveComputer(new Computer(null, name.trim(), type, hourlyRate));
+        return repository.saveComputer(new Computer(null, name.trim(), type, hourlyRate));
     }
 
     public synchronized Computer getComputer(Long id) {
-        return storage.findComputerById(id)
+        if (id == null) {
+            throw new ValidationException("Идентификатор компьютера обязателен");
+        }
+        return repository.findComputerById(id)
                 .orElseThrow(() -> new NotFoundException("Компьютер", id));
     }
 
     public synchronized List<Computer> getComputers(ComputerType type, ComputerStatus status, Double maxRate) {
-        return storage.findAllComputers().stream()
+        return repository.findAllComputers().stream()
                 .filter(c -> type == null || c.getType() == type)
                 .filter(c -> status == null || c.getStatus() == status)
                 .filter(c -> maxRate == null || c.getHourlyRate() <= maxRate)
@@ -51,14 +56,14 @@ public class ClubService {
             throw new ConflictException("Нельзя изменить категорию компьютера, пока он занят игроком");
         }
 
-        if (!pc.getName().equalsIgnoreCase(name.trim()) && storage.findComputerByName(name).isPresent()) {
+        if (!pc.getName().equalsIgnoreCase(name.trim()) && repository.findComputerByName(name).isPresent()) {
             throw new ConflictException("Компьютер с именем '" + name.trim() + "' уже существует");
         }
 
         pc.setName(name.trim());
         pc.setType(type);
         pc.setHourlyRate(hourlyRate);
-        return storage.saveComputer(pc);
+        return repository.saveComputer(pc);
     }
 
     public synchronized void deleteComputer(Long id) {
@@ -66,7 +71,7 @@ public class ClubService {
         if (pc.getStatus() == ComputerStatus.OCCUPIED) {
             throw new ConflictException("Невозможно удалить компьютер " + id + ": за ним сейчас играет гость");
         }
-        storage.deleteComputer(id);
+        repository.deleteComputer(id);
     }
 
     // --- Доменные операции: занять и освободить компьютер, техобслуживание ---
@@ -98,10 +103,10 @@ public class ClubService {
 
         computer.setStatus(ComputerStatus.OCCUPIED);
         computer.setOccupiedByPlayerId(playerId);
-        storage.saveComputer(computer);
+        repository.saveComputer(computer);
 
         player.addOccupiedComputer(computerId);
-        storage.savePlayer(player);
+        repository.savePlayer(player);
 
         return computer;
     }
@@ -118,16 +123,16 @@ public class ClubService {
 
         Long playerId = computer.getOccupiedByPlayerId();
         if (playerId != null) {
-            Player player = storage.findPlayerById(playerId).orElse(null);
+            Player player = repository.findPlayerById(playerId).orElse(null);
             if (player != null) {
                 player.removeOccupiedComputer(computerId);
-                storage.savePlayer(player);
+                repository.savePlayer(player);
             }
         }
 
         computer.setStatus(ComputerStatus.AVAILABLE);
         computer.setOccupiedByPlayerId(null);
-        return storage.saveComputer(computer);
+        return repository.saveComputer(computer);
     }
 
     public synchronized Computer sendToMaintenance(Long id) {
@@ -139,7 +144,7 @@ public class ClubService {
             throw new ConflictException("Компьютер уже находится на обслуживании");
         }
         pc.setStatus(ComputerStatus.MAINTENANCE);
-        return storage.saveComputer(pc);
+        return repository.saveComputer(pc);
     }
 
     public synchronized Computer completeMaintenance(Long id) {
@@ -148,26 +153,29 @@ public class ClubService {
             throw new ConflictException("Компьютер не находится на обслуживании");
         }
         pc.setStatus(ComputerStatus.AVAILABLE);
-        return storage.saveComputer(pc);
+        return repository.saveComputer(pc);
     }
 
     // --- Управление игроками ---
 
     public synchronized Player createPlayer(String nickname, String phone, PlayerType type) {
         validatePlayer(nickname, phone, type);
-        if (storage.findPlayerByPhone(phone).isPresent()) {
+        if (repository.findPlayerByPhone(phone).isPresent()) {
             throw new ConflictException("Игрок с номером телефона '" + phone.trim() + "' уже зарегистрирован в клубе");
         }
-        return storage.savePlayer(new Player(null, nickname.trim(), phone.trim(), type));
+        return repository.savePlayer(new Player(null, nickname.trim(), phone.trim(), type));
     }
 
     public synchronized Player getPlayer(Long id) {
-        return storage.findPlayerById(id)
+        if (id == null) {
+            throw new ValidationException("Идентификатор игрока обязателен");
+        }
+        return repository.findPlayerById(id)
                 .orElseThrow(() -> new NotFoundException("Игрок", id));
     }
 
     public synchronized List<Player> getPlayers(PlayerType type, Boolean hasActiveComputers, String search) {
-        return storage.findAllPlayers().stream()
+        return repository.findAllPlayers().stream()
                 .filter(p -> type == null || p.getType() == type)
                 .filter(p -> hasActiveComputers == null || p.hasActiveComputers() == hasActiveComputers)
                 .filter(p -> search == null || searchMatches(p, search))
@@ -178,7 +186,7 @@ public class ClubService {
         Player player = getPlayer(id);
         validatePlayer(nickname, phone, type);
 
-        if (!player.getPhone().equalsIgnoreCase(phone.trim()) && storage.findPlayerByPhone(phone).isPresent()) {
+        if (!player.getPhone().equalsIgnoreCase(phone.trim()) && repository.findPlayerByPhone(phone).isPresent()) {
             throw new ConflictException("Игрок с телефоном '" + phone.trim() + "' уже зарегистрирован");
         }
 
@@ -189,7 +197,7 @@ public class ClubService {
                         + player.getOccupiedComputerIds().size() + " компьютеров (максимум для REGULAR — 1)");
             }
             for (Long pcId : player.getOccupiedComputerIds()) {
-                Computer pc = storage.findComputerById(pcId).orElse(null);
+                Computer pc = repository.findComputerById(pcId).orElse(null);
                 if (pc != null && pc.getType() == ComputerType.VIP) {
                     throw new ConflictException("Нельзя перевести игрока в REGULAR: он сейчас занимает VIP-компьютер");
                 }
@@ -199,7 +207,7 @@ public class ClubService {
         player.setNickname(nickname.trim());
         player.setPhone(phone.trim());
         player.setType(type);
-        return storage.savePlayer(player);
+        return repository.savePlayer(player);
     }
 
     public synchronized void deletePlayer(Long id) {
@@ -207,7 +215,7 @@ public class ClubService {
         if (player.hasActiveComputers()) {
             throw new ConflictException("Нельзя удалить профиль игрока " + id + ": он сейчас занимает компьютеры");
         }
-        storage.deletePlayer(id);
+        repository.deletePlayer(id);
     }
 
     // --- Валидация данных ---
