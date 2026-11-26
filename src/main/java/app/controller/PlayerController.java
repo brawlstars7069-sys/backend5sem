@@ -1,8 +1,8 @@
 package app.controller;
 
-import app.domain.Model.Player;
 import app.domain.Model.PlayerType;
 import app.dto.PlayerDto;
+import app.dto.PlayerResponse;
 import app.service.ClubService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -21,7 +21,7 @@ public class PlayerController {
     }
 
     @GetMapping
-    public List<Player> getPlayers(
+    public List<PlayerResponse> getPlayers(
             @RequestParam(required = false) PlayerType type,
             @RequestParam(required = false) Boolean hasActiveComputers,
             @RequestParam(required = false) Boolean hasActiveSession,
@@ -32,18 +32,18 @@ public class PlayerController {
     }
 
     @GetMapping("/{id}")
-    public Player getPlayer(@PathVariable Long id) {
+    public PlayerResponse getPlayer(@PathVariable Long id) {
         return clubService.getPlayer(id);
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Player createPlayer(@Valid @RequestBody PlayerDto dto) {
+    public PlayerResponse createPlayer(@Valid @RequestBody PlayerDto dto) {
         return clubService.createPlayer(dto.nickname(), dto.phone(), dto.type());
     }
 
     @PutMapping("/{id}")
-    public Player updatePlayer(@PathVariable Long id, @Valid @RequestBody PlayerDto dto) {
+    public PlayerResponse updatePlayer(@PathVariable Long id, @Valid @RequestBody PlayerDto dto) {
         return clubService.updatePlayer(id, dto.nickname(), dto.phone(), dto.type());
     }
 

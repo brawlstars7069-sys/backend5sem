@@ -8,214 +8,320 @@ import app.domain.Model.ComputerStatus;
 import app.domain.Model.ComputerType;
 import app.domain.Model.Player;
 import app.domain.Model.PlayerType;
-import app.repository.ClubRepository;
+import app.dto.ComputerResponse;
+import app.dto.PlayerResponse;
+import app.repository.ComputerRepository;
+import app.repository.PlayerRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 @Service
 public class ClubService {
 
-    private final ClubRepository repository;
+    private final ComputerRepository computerRepository;
+    private final PlayerRepository playerRepository;
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
-    public ClubService(ClubRepository repository) {
-        this.repository = repository;
+    public ClubService(ComputerRepository computerRepository, PlayerRepository playerRepository) {
+        this.computerRepository = computerRepository;
+        this.playerRepository = playerRepository;
     }
 
     // --- Управление компьютерами ---
 
-    public synchronized Computer createComputer(String name, ComputerType type, Double hourlyRate) {
+    public ComputerResponse createComputer(String name, ComputerType type, Double hourlyRate) {
         validateComputer(name, type, hourlyRate);
-        if (repository.findComputerByName(name).isPresent()) {
-            throw new ConflictException("Компьютер с именем '" + name.trim() + "' уже существует в Zombie Playa");
+        lock.writeLock().lock();
+        try {
+            if (computerRepository.findByName(name).isPresent()) {
+                throw new ConflictException("Компьютер с именем '" + name.trim() + "' уже существует в Zombie Playa");
+            }
+            Computer saved = computerRepository.save(new Computer(null, name.trim(), type, hourlyRate));
+            return ComputerResponse.from(saved);
+        } finally {
+            lock.writeLock().unlock();
         }
-        return repository.saveComputer(new Computer(null, name.trim(), type, hourlyRate));
     }
 
-    public synchronized Computer getComputer(Long id) {
+    public ComputerResponse getComputer(Long id) {
         if (id == null) {
             throw new ValidationException("Идентификатор компьютера обязателен");
         }
-        return repository.findComputerById(id)
-                .orElseThrow(() -> new NotFoundException("Компьютер", id));
+        lock.readLock().lock();
+        try {
+            return ComputerResponse.from(findComputerOrThrow(id));
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
-    public synchronized List<Computer> getComputers(ComputerType type, ComputerStatus status, Double maxRate) {
-        return repository.findAllComputers().stream()
-                .filter(c -> type == null || c.getType() == type)
-                .filter(c -> status == null || c.getStatus() == status)
-                .filter(c -> maxRate == null || c.getHourlyRate() <= maxRate)
-                .toList();
+    public List<ComputerResponse> getComputers(ComputerType type, ComputerStatus status, Double maxRate) {
+        lock.readLock().lock();
+        try {
+            return computerRepository.findAll().stream()
+                    .filter(c -> type == null || c.getType() == type)
+                    .filter(c -> status == null || c.getStatus() == status)
+                    .filter(c -> maxRate == null || c.getHourlyRate() <= maxRate)
+                    .map(ComputerResponse::from)
+                    .toList();
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
-    public synchronized Computer updateComputer(Long id, String name, ComputerType type, Double hourlyRate) {
-        Computer pc = getComputer(id);
+    public ComputerResponse updateComputer(Long id, String name, ComputerType type, Double hourlyRate) {
+        if (id == null) {
+            throw new ValidationException("Идентификатор компьютера обязателен");
+        }
         validateComputer(name, type, hourlyRate);
+        lock.writeLock().lock();
+        try {
+            Computer pc = findComputerOrThrow(id);
 
-        if (pc.getStatus() == ComputerStatus.OCCUPIED && pc.getType() != type) {
-            throw new ConflictException("Нельзя изменить категорию компьютера, пока он занят игроком");
+            if (pc.getStatus() == ComputerStatus.OCCUPIED && pc.getType() != type) {
+                throw new ConflictException("Нельзя изменить категорию компьютера, пока он занят игроком");
+            }
+
+            if (!pc.getName().equalsIgnoreCase(name.trim()) && computerRepository.findByName(name).isPresent()) {
+                throw new ConflictException("Компьютер с именем '" + name.trim() + "' уже существует");
+            }
+
+            pc.setName(name.trim());
+            pc.setType(type);
+            pc.setHourlyRate(hourlyRate);
+            return ComputerResponse.from(computerRepository.save(pc));
+        } finally {
+            lock.writeLock().unlock();
         }
-
-        if (!pc.getName().equalsIgnoreCase(name.trim()) && repository.findComputerByName(name).isPresent()) {
-            throw new ConflictException("Компьютер с именем '" + name.trim() + "' уже существует");
-        }
-
-        pc.setName(name.trim());
-        pc.setType(type);
-        pc.setHourlyRate(hourlyRate);
-        return repository.saveComputer(pc);
     }
 
-    public synchronized void deleteComputer(Long id) {
-        Computer pc = getComputer(id);
-        if (pc.getStatus() == ComputerStatus.OCCUPIED) {
-            throw new ConflictException("Невозможно удалить компьютер " + id + ": за ним сейчас играет гость");
+    public void deleteComputer(Long id) {
+        if (id == null) {
+            throw new ValidationException("Идентификатор компьютера обязателен");
         }
-        repository.deleteComputer(id);
+        lock.writeLock().lock();
+        try {
+            Computer pc = findComputerOrThrow(id);
+            if (pc.getStatus() == ComputerStatus.OCCUPIED) {
+                throw new ConflictException("Невозможно удалить компьютер " + id + ": за ним сейчас играет гость");
+            }
+            computerRepository.deleteById(id);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     // --- Доменные операции: занять и освободить компьютер, техобслуживание ---
 
-    public synchronized Computer occupyComputer(Long computerId, Long playerId) {
+    public ComputerResponse occupyComputer(Long computerId, Long playerId) {
         if (computerId == null || playerId == null) {
             throw new ValidationException("Параметры computerId и playerId обязательны");
         }
+        lock.writeLock().lock();
+        try {
+            Computer computer = findComputerOrThrow(computerId);
+            Player player = findPlayerOrThrow(playerId);
 
-        Computer computer = getComputer(computerId);
-        Player player = getPlayer(playerId);
+            if (computer.getStatus() == ComputerStatus.OCCUPIED) {
+                throw new ConflictException("Компьютер '" + computer.getName() + "' уже занят другим игроком");
+            }
+            if (computer.getStatus() == ComputerStatus.MAINTENANCE) {
+                throw new ConflictException("Компьютер '" + computer.getName() + "' временно на техобслуживании");
+            }
 
-        if (computer.getStatus() == ComputerStatus.OCCUPIED) {
-            throw new ConflictException("Компьютер '" + computer.getName() + "' уже занят другим игроком");
+            if (player.getOccupiedComputerIds().size() >= player.getMaxComputers()) {
+                throw new ConflictException("Игрок типа " + player.getType() + " исчерпал лимит мест (максимум "
+                        + player.getMaxComputers() + ")");
+            }
+
+            if (!player.canAccess(computer.getType())) {
+                throw new ConflictException("Игрок типа " + player.getType() + " не имеет доступа к компьютерам категории "
+                        + computer.getType() + ". Обычным гостям доступны только компьютеры STANDARD");
+            }
+
+            computer.setStatus(ComputerStatus.OCCUPIED);
+            computer.setOccupiedByPlayerId(playerId);
+            computerRepository.save(computer);
+
+            player.addOccupiedComputer(computerId);
+            playerRepository.save(player);
+
+            return ComputerResponse.from(computer);
+        } finally {
+            lock.writeLock().unlock();
         }
-        if (computer.getStatus() == ComputerStatus.MAINTENANCE) {
-            throw new ConflictException("Компьютер '" + computer.getName() + "' временно на техобслуживании");
-        }
-
-        if (player.getOccupiedComputerIds().size() >= player.getMaxComputers()) {
-            throw new ConflictException("Игрок типа " + player.getType() + " исчерпал лимит мест (максимум "
-                    + player.getMaxComputers() + ")");
-        }
-
-        if (!player.canAccess(computer.getType())) {
-            throw new ConflictException("Игрок типа " + player.getType() + " не имеет доступа к компьютерам категории "
-                    + computer.getType() + ". Обычным гостям доступны только компьютеры STANDARD");
-        }
-
-        computer.setStatus(ComputerStatus.OCCUPIED);
-        computer.setOccupiedByPlayerId(playerId);
-        repository.saveComputer(computer);
-
-        player.addOccupiedComputer(computerId);
-        repository.savePlayer(player);
-
-        return computer;
     }
 
-    public synchronized Computer releaseComputer(Long computerId) {
+    public ComputerResponse releaseComputer(Long computerId) {
         if (computerId == null) {
             throw new ValidationException("computerId обязателен");
         }
-
-        Computer computer = getComputer(computerId);
-        if (computer.getStatus() != ComputerStatus.OCCUPIED) {
-            throw new ConflictException("Компьютер '" + computer.getName() + "' не занят");
-        }
-
-        Long playerId = computer.getOccupiedByPlayerId();
-        if (playerId != null) {
-            Player player = repository.findPlayerById(playerId).orElse(null);
-            if (player != null) {
-                player.removeOccupiedComputer(computerId);
-                repository.savePlayer(player);
+        lock.writeLock().lock();
+        try {
+            Computer computer = findComputerOrThrow(computerId);
+            if (computer.getStatus() != ComputerStatus.OCCUPIED) {
+                throw new ConflictException("Компьютер '" + computer.getName() + "' не занят");
             }
-        }
 
-        computer.setStatus(ComputerStatus.AVAILABLE);
-        computer.setOccupiedByPlayerId(null);
-        return repository.saveComputer(computer);
+            Long playerId = computer.getOccupiedByPlayerId();
+            if (playerId != null) {
+                playerRepository.findById(playerId).ifPresent(player -> {
+                    player.removeOccupiedComputer(computerId);
+                    playerRepository.save(player);
+                });
+            }
+
+            computer.setStatus(ComputerStatus.AVAILABLE);
+            computer.setOccupiedByPlayerId(null);
+            return ComputerResponse.from(computerRepository.save(computer));
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
-    public synchronized Computer sendToMaintenance(Long id) {
-        Computer pc = getComputer(id);
-        if (pc.getStatus() == ComputerStatus.OCCUPIED) {
-            throw new ConflictException("Нельзя отправить компьютер на обслуживание: за ним идет игра");
+    public ComputerResponse sendToMaintenance(Long id) {
+        if (id == null) {
+            throw new ValidationException("Идентификатор компьютера обязателен");
         }
-        if (pc.getStatus() == ComputerStatus.MAINTENANCE) {
-            throw new ConflictException("Компьютер уже находится на обслуживании");
+        lock.writeLock().lock();
+        try {
+            Computer pc = findComputerOrThrow(id);
+            if (pc.getStatus() == ComputerStatus.OCCUPIED) {
+                throw new ConflictException("Нельзя отправить компьютер на обслуживание: за ним идет игра");
+            }
+            if (pc.getStatus() == ComputerStatus.MAINTENANCE) {
+                throw new ConflictException("Компьютер уже находится на обслуживании");
+            }
+            pc.setStatus(ComputerStatus.MAINTENANCE);
+            return ComputerResponse.from(computerRepository.save(pc));
+        } finally {
+            lock.writeLock().unlock();
         }
-        pc.setStatus(ComputerStatus.MAINTENANCE);
-        return repository.saveComputer(pc);
     }
 
-    public synchronized Computer completeMaintenance(Long id) {
-        Computer pc = getComputer(id);
-        if (pc.getStatus() != ComputerStatus.MAINTENANCE) {
-            throw new ConflictException("Компьютер не находится на обслуживании");
+    public ComputerResponse completeMaintenance(Long id) {
+        if (id == null) {
+            throw new ValidationException("Идентификатор компьютера обязателен");
         }
-        pc.setStatus(ComputerStatus.AVAILABLE);
-        return repository.saveComputer(pc);
+        lock.writeLock().lock();
+        try {
+            Computer pc = findComputerOrThrow(id);
+            if (pc.getStatus() != ComputerStatus.MAINTENANCE) {
+                throw new ConflictException("Компьютер не находится на обслуживании");
+            }
+            pc.setStatus(ComputerStatus.AVAILABLE);
+            return ComputerResponse.from(computerRepository.save(pc));
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     // --- Управление игроками ---
 
-    public synchronized Player createPlayer(String nickname, String phone, PlayerType type) {
+    public PlayerResponse createPlayer(String nickname, String phone, PlayerType type) {
         validatePlayer(nickname, phone, type);
-        if (repository.findPlayerByPhone(phone).isPresent()) {
-            throw new ConflictException("Игрок с номером телефона '" + phone.trim() + "' уже зарегистрирован в клубе");
+        lock.writeLock().lock();
+        try {
+            if (playerRepository.findByPhone(phone).isPresent()) {
+                throw new ConflictException("Игрок с номером телефона '" + phone.trim() + "' уже зарегистрирован в клубе");
+            }
+            Player saved = playerRepository.save(new Player(null, nickname.trim(), phone.trim(), type));
+            return PlayerResponse.from(saved);
+        } finally {
+            lock.writeLock().unlock();
         }
-        return repository.savePlayer(new Player(null, nickname.trim(), phone.trim(), type));
     }
 
-    public synchronized Player getPlayer(Long id) {
+    public PlayerResponse getPlayer(Long id) {
         if (id == null) {
             throw new ValidationException("Идентификатор игрока обязателен");
         }
-        return repository.findPlayerById(id)
-                .orElseThrow(() -> new NotFoundException("Игрок", id));
-    }
-
-    public synchronized List<Player> getPlayers(PlayerType type, Boolean hasActiveComputers, String search) {
-        return repository.findAllPlayers().stream()
-                .filter(p -> type == null || p.getType() == type)
-                .filter(p -> hasActiveComputers == null || p.hasActiveComputers() == hasActiveComputers)
-                .filter(p -> search == null || searchMatches(p, search))
-                .toList();
-    }
-
-    public synchronized Player updatePlayer(Long id, String nickname, String phone, PlayerType type) {
-        Player player = getPlayer(id);
-        validatePlayer(nickname, phone, type);
-
-        if (!player.getPhone().equalsIgnoreCase(phone.trim()) && repository.findPlayerByPhone(phone).isPresent()) {
-            throw new ConflictException("Игрок с телефоном '" + phone.trim() + "' уже зарегистрирован");
+        lock.readLock().lock();
+        try {
+            return PlayerResponse.from(findPlayerOrThrow(id));
+        } finally {
+            lock.readLock().unlock();
         }
+    }
 
-        // Проверка при понижении статуса с VIP до REGULAR
-        if (player.getType() == PlayerType.VIP && type == PlayerType.REGULAR) {
-            if (player.getOccupiedComputerIds().size() > 1) {
-                throw new ConflictException("Нельзя перевести игрока в REGULAR: у него занято "
-                        + player.getOccupiedComputerIds().size() + " компьютеров (максимум для REGULAR — 1)");
+    public List<PlayerResponse> getPlayers(PlayerType type, Boolean hasActiveComputers, String search) {
+        lock.readLock().lock();
+        try {
+            return playerRepository.findAll().stream()
+                    .filter(p -> type == null || p.getType() == type)
+                    .filter(p -> hasActiveComputers == null || p.hasActiveComputers() == hasActiveComputers)
+                    .filter(p -> search == null || searchMatches(p, search))
+                    .map(PlayerResponse::from)
+                    .toList();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    public PlayerResponse updatePlayer(Long id, String nickname, String phone, PlayerType type) {
+        if (id == null) {
+            throw new ValidationException("Идентификатор игрока обязателен");
+        }
+        validatePlayer(nickname, phone, type);
+        lock.writeLock().lock();
+        try {
+            Player player = findPlayerOrThrow(id);
+
+            if (!player.getPhone().equalsIgnoreCase(phone.trim()) && playerRepository.findByPhone(phone).isPresent()) {
+                throw new ConflictException("Игрок с телефоном '" + phone.trim() + "' уже зарегистрирован");
             }
-            for (Long pcId : player.getOccupiedComputerIds()) {
-                Computer pc = repository.findComputerById(pcId).orElse(null);
-                if (pc != null && pc.getType() == ComputerType.VIP) {
-                    throw new ConflictException("Нельзя перевести игрока в REGULAR: он сейчас занимает VIP-компьютер");
+
+            // Проверка при понижении статуса с VIP до REGULAR
+            if (player.getType() == PlayerType.VIP && type == PlayerType.REGULAR) {
+                if (player.getOccupiedComputerIds().size() > 1) {
+                    throw new ConflictException("Нельзя перевести игрока в REGULAR: у него занято "
+                            + player.getOccupiedComputerIds().size() + " компьютеров (максимум для REGULAR — 1)");
+                }
+                for (Long pcId : player.getOccupiedComputerIds()) {
+                    Computer pc = computerRepository.findById(pcId).orElse(null);
+                    if (pc != null && pc.getType() == ComputerType.VIP) {
+                        throw new ConflictException("Нельзя перевести игрока в REGULAR: он сейчас занимает VIP-компьютер");
+                    }
                 }
             }
-        }
 
-        player.setNickname(nickname.trim());
-        player.setPhone(phone.trim());
-        player.setType(type);
-        return repository.savePlayer(player);
+            player.setNickname(nickname.trim());
+            player.setPhone(phone.trim());
+            player.setType(type);
+            return PlayerResponse.from(playerRepository.save(player));
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
-    public synchronized void deletePlayer(Long id) {
-        Player player = getPlayer(id);
-        if (player.hasActiveComputers()) {
-            throw new ConflictException("Нельзя удалить профиль игрока " + id + ": он сейчас занимает компьютеры");
+    public void deletePlayer(Long id) {
+        if (id == null) {
+            throw new ValidationException("Идентификатор игрока обязателен");
         }
-        repository.deletePlayer(id);
+        lock.writeLock().lock();
+        try {
+            Player player = findPlayerOrThrow(id);
+            if (player.hasActiveComputers()) {
+                throw new ConflictException("Нельзя удалить профиль игрока " + id + ": он сейчас занимает компьютеры");
+            }
+            playerRepository.deleteById(id);
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    // --- Вспомогательные методы (вызываются под блокировкой) ---
+
+    private Computer findComputerOrThrow(Long id) {
+        return computerRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Компьютер", id));
+    }
+
+    private Player findPlayerOrThrow(Long id) {
+        return playerRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Игрок", id));
     }
 
     // --- Валидация данных ---

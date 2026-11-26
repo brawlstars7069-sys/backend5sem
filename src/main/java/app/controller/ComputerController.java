@@ -1,9 +1,9 @@
 package app.controller;
 
-import app.domain.Model.Computer;
 import app.domain.Model.ComputerStatus;
 import app.domain.Model.ComputerType;
 import app.dto.ComputerDto;
+import app.dto.ComputerResponse;
 import app.dto.OccupyDto;
 import app.service.ClubService;
 import jakarta.validation.Valid;
@@ -23,7 +23,7 @@ public class ComputerController {
     }
 
     @GetMapping
-    public List<Computer> getComputers(
+    public List<ComputerResponse> getComputers(
             @RequestParam(required = false) ComputerType type,
             @RequestParam(required = false) ComputerStatus status,
             @RequestParam(required = false) Double maxRate
@@ -32,18 +32,18 @@ public class ComputerController {
     }
 
     @GetMapping("/{id}")
-    public Computer getComputer(@PathVariable Long id) {
+    public ComputerResponse getComputer(@PathVariable Long id) {
         return clubService.getComputer(id);
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Computer createComputer(@Valid @RequestBody ComputerDto dto) {
+    public ComputerResponse createComputer(@Valid @RequestBody ComputerDto dto) {
         return clubService.createComputer(dto.name(), dto.type(), dto.hourlyRate());
     }
 
     @PutMapping("/{id}")
-    public Computer updateComputer(@PathVariable Long id, @Valid @RequestBody ComputerDto dto) {
+    public ComputerResponse updateComputer(@PathVariable Long id, @Valid @RequestBody ComputerDto dto) {
         return clubService.updateComputer(id, dto.name(), dto.type(), dto.hourlyRate());
     }
 
@@ -54,22 +54,22 @@ public class ComputerController {
     }
 
     @PostMapping("/{id}/occupy")
-    public Computer occupyComputer(@PathVariable Long id, @Valid @RequestBody OccupyDto dto) {
+    public ComputerResponse occupyComputer(@PathVariable Long id, @Valid @RequestBody OccupyDto dto) {
         return clubService.occupyComputer(id, dto.playerId());
     }
 
     @PostMapping("/{id}/release")
-    public Computer releaseComputer(@PathVariable Long id) {
+    public ComputerResponse releaseComputer(@PathVariable Long id) {
         return clubService.releaseComputer(id);
     }
 
     @PostMapping("/{id}/maintenance")
-    public Computer sendToMaintenance(@PathVariable Long id) {
+    public ComputerResponse sendToMaintenance(@PathVariable Long id) {
         return clubService.sendToMaintenance(id);
     }
 
     @PostMapping("/{id}/complete-maintenance")
-    public Computer completeMaintenance(@PathVariable Long id) {
+    public ComputerResponse completeMaintenance(@PathVariable Long id) {
         return clubService.completeMaintenance(id);
     }
 }
