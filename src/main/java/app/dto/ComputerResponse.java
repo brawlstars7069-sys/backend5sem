@@ -10,7 +10,10 @@ public record ComputerResponse(
         ComputerType type,
         double hourlyRate,
         ComputerStatus status,
-        Long occupiedByPlayerId
+        Long occupiedByPlayerId,
+        PlayerSummary occupiedByPlayer,
+        String ipAddress,
+        String specs
 ) {
     public static ComputerResponse from(Computer pc) {
         return new ComputerResponse(
@@ -19,7 +22,10 @@ public record ComputerResponse(
                 pc.getType(),
                 pc.getHourlyRate(),
                 pc.getStatus(),
-                pc.getOccupiedByPlayerId()
+                pc.getOccupiedByPlayerId(),
+                PlayerSummary.from(pc.getOccupiedBy()),
+                pc.getIpAddress(),
+                pc.getSpecs()
         );
     }
 }

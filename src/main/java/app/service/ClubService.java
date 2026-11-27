@@ -13,11 +13,14 @@ import app.dto.PlayerResponse;
 import app.repository.ComputerRepository;
 import app.repository.PlayerRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 @Service
+@Transactional(readOnly = true)
 public class ClubService {
 
     private final ComputerRepository computerRepository;
@@ -31,14 +34,21 @@ public class ClubService {
 
     // --- Управление компьютерами ---
 
+    @Transactional(rollbackFor = Exception.class)
     public ComputerResponse createComputer(String name, ComputerType type, Double hourlyRate) {
+        return createComputer(name, type, hourlyRate, null, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ComputerResponse createComputer(String name, ComputerType type, Double hourlyRate, String ipAddress, String specs) {
         validateComputer(name, type, hourlyRate);
         lock.writeLock().lock();
         try {
             if (computerRepository.findByName(name).isPresent()) {
                 throw new ConflictException("Компьютер с именем '" + name.trim() + "' уже существует в Zombie Playa");
             }
-            Computer saved = computerRepository.save(new Computer(null, name.trim(), type, hourlyRate));
+            Computer computer = new Computer(null, name.trim(), type, hourlyRate, ipAddress, specs);
+            Computer saved = computerRepository.save(computer);
             return ComputerResponse.from(saved);
         } finally {
             lock.writeLock().unlock();
@@ -60,7 +70,7 @@ public class ClubService {
     public List<ComputerResponse> getComputers(ComputerType type, ComputerStatus status, Double maxRate) {
         lock.readLock().lock();
         try {
-            return computerRepository.findAll().stream()
+            return computerRepository.findAllWithPlayer().stream()
                     .filter(c -> type == null || c.getType() == type)
                     .filter(c -> status == null || c.getStatus() == status)
                     .filter(c -> maxRate == null || c.getHourlyRate() <= maxRate)
@@ -71,6 +81,7 @@ public class ClubService {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ComputerResponse updateComputer(Long id, String name, ComputerType type, Double hourlyRate) {
         if (id == null) {
             throw new ValidationException("Идентификатор компьютера обязателен");
@@ -97,6 +108,7 @@ public class ClubService {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void deleteComputer(Long id) {
         if (id == null) {
             throw new ValidationException("Идентификатор компьютера обязателен");
@@ -113,8 +125,9 @@ public class ClubService {
         }
     }
 
-    // --- Доменные операции: занять и освободить компьютер, техобслуживание ---
+    // --- Доменные операции: занять, освободить, переместить (транзакция над 2+ ресурсами), ТО ---
 
+    @Transactional(rollbackFor = Exception.class)
     public ComputerResponse occupyComputer(Long computerId, Long playerId) {
         if (computerId == null || playerId == null) {
             throw new ValidationException("Параметры computerId и playerId обязательны");
@@ -142,10 +155,10 @@ public class ClubService {
             }
 
             computer.setStatus(ComputerStatus.OCCUPIED);
-            computer.setOccupiedByPlayerId(playerId);
+            computer.setOccupiedBy(player);
             computerRepository.save(computer);
 
-            player.addOccupiedComputer(computerId);
+            player.addOccupiedComputer(computer);
             playerRepository.save(player);
 
             return ComputerResponse.from(computer);
@@ -154,6 +167,7 @@ public class ClubService {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ComputerResponse releaseComputer(Long computerId) {
         if (computerId == null) {
             throw new ValidationException("computerId обязателен");
@@ -165,22 +179,85 @@ public class ClubService {
                 throw new ConflictException("Компьютер '" + computer.getName() + "' не занят");
             }
 
-            Long playerId = computer.getOccupiedByPlayerId();
-            if (playerId != null) {
-                playerRepository.findById(playerId).ifPresent(player -> {
-                    player.removeOccupiedComputer(computerId);
-                    playerRepository.save(player);
-                });
+            Player player = computer.getOccupiedBy();
+            if (player == null && computer.getOccupiedByPlayerId() != null) {
+                player = playerRepository.findById(computer.getOccupiedByPlayerId()).orElse(null);
+            }
+
+            if (player != null) {
+                player.removeOccupiedComputer(computer);
+                player.removeOccupiedComputerId(computerId);
+                playerRepository.save(player);
             }
 
             computer.setStatus(ComputerStatus.AVAILABLE);
-            computer.setOccupiedByPlayerId(null);
+            computer.setOccupiedBy(null);
             return ComputerResponse.from(computerRepository.save(computer));
         } finally {
             lock.writeLock().unlock();
         }
     }
 
+    /**
+     * Атомарная операция над несколькими связанными объектами (Требование 3):
+     * Пересадка игрока с одного компьютера на другой.
+     * Если целевой компьютер недоступен (занят, на ТО, нет доступа по тарифу или сбой),
+     * транзакция целиком откатывается — освобождение исходного компьютера не сохраняется.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ComputerResponse transferComputer(Long fromComputerId, Long toComputerId, Long playerId) {
+        if (fromComputerId == null || toComputerId == null || playerId == null) {
+            throw new ValidationException("Параметры fromComputerId, toComputerId и playerId обязательны");
+        }
+        if (fromComputerId.equals(toComputerId)) {
+            throw new ValidationException("Исходный и целевой компьютеры не могут совпадать");
+        }
+
+        lock.writeLock().lock();
+        try {
+            Computer fromComputer = findComputerOrThrow(fromComputerId);
+            Computer toComputer = findComputerOrThrow(toComputerId);
+            Player player = findPlayerOrThrow(playerId);
+
+            // Проверка, что исходный компьютер действительно занят именно этим игроком
+            if (fromComputer.getStatus() != ComputerStatus.OCCUPIED || !Objects.equals(fromComputer.getOccupiedByPlayerId(), playerId)) {
+                throw new ConflictException("Компьютер '" + fromComputer.getName() + "' не занят игроком с ID " + playerId);
+            }
+
+            // Валидация целевого компьютера ДО внесения изменений
+            if (toComputer.getStatus() == ComputerStatus.OCCUPIED) {
+                throw new ConflictException("Целевой компьютер '" + toComputer.getName() + "' уже занят другим игроком");
+            }
+            if (toComputer.getStatus() == ComputerStatus.MAINTENANCE) {
+                throw new ConflictException("Целевой компьютер '" + toComputer.getName() + "' находится на техобслуживании");
+            }
+            if (!player.canAccess(toComputer.getType())) {
+                throw new ConflictException("Игрок типа " + player.getType() + " не имеет доступа к категории " + toComputer.getType());
+            }
+
+            // 1. Освобождаем исходный компьютер
+            fromComputer.setStatus(ComputerStatus.AVAILABLE);
+            fromComputer.setOccupiedBy(null);
+            player.removeOccupiedComputer(fromComputer);
+            player.removeOccupiedComputerId(fromComputerId);
+            computerRepository.save(fromComputer);
+
+            // 2. Занимаем целевой компьютер
+            toComputer.setStatus(ComputerStatus.OCCUPIED);
+            toComputer.setOccupiedBy(player);
+            player.addOccupiedComputer(toComputer);
+            computerRepository.save(toComputer);
+
+            // 3. Сохраняем обновленного игрока
+            playerRepository.save(player);
+
+            return ComputerResponse.from(toComputer);
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public ComputerResponse sendToMaintenance(Long id) {
         if (id == null) {
             throw new ValidationException("Идентификатор компьютера обязателен");
@@ -201,6 +278,7 @@ public class ClubService {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ComputerResponse completeMaintenance(Long id) {
         if (id == null) {
             throw new ValidationException("Идентификатор компьютера обязателен");
@@ -220,6 +298,7 @@ public class ClubService {
 
     // --- Управление игроками ---
 
+    @Transactional(rollbackFor = Exception.class)
     public PlayerResponse createPlayer(String nickname, String phone, PlayerType type) {
         validatePlayer(nickname, phone, type);
         lock.writeLock().lock();
@@ -249,7 +328,7 @@ public class ClubService {
     public List<PlayerResponse> getPlayers(PlayerType type, Boolean hasActiveComputers, String search) {
         lock.readLock().lock();
         try {
-            return playerRepository.findAll().stream()
+            return playerRepository.findAllWithComputers().stream()
                     .filter(p -> type == null || p.getType() == type)
                     .filter(p -> hasActiveComputers == null || p.hasActiveComputers() == hasActiveComputers)
                     .filter(p -> search == null || searchMatches(p, search))
@@ -260,6 +339,7 @@ public class ClubService {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlayerResponse updatePlayer(Long id, String nickname, String phone, PlayerType type) {
         if (id == null) {
             throw new ValidationException("Идентификатор игрока обязателен");
@@ -296,6 +376,7 @@ public class ClubService {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void deletePlayer(Long id) {
         if (id == null) {
             throw new ValidationException("Идентификатор игрока обязателен");

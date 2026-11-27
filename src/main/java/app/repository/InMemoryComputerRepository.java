@@ -38,6 +38,11 @@ public class InMemoryComputerRepository implements ComputerRepository {
     }
 
     @Override
+    public List<Computer> findAllWithPlayer() {
+        return findAll();
+    }
+
+    @Override
     public Optional<Computer> findByName(String name) {
         if (name == null) {
             return Optional.empty();

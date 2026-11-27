@@ -38,6 +38,11 @@ public class InMemoryPlayerRepository implements PlayerRepository {
     }
 
     @Override
+    public List<Player> findAllWithComputers() {
+        return findAll();
+    }
+
+    @Override
     public Optional<Player> findByPhone(String phone) {
         if (phone == null) {
             return Optional.empty();

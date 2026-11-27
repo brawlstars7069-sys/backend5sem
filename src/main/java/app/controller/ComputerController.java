@@ -5,6 +5,7 @@ import app.domain.Model.ComputerType;
 import app.dto.ComputerDto;
 import app.dto.ComputerResponse;
 import app.dto.OccupyDto;
+import app.dto.TransferDto;
 import app.service.ClubService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -56,6 +57,11 @@ public class ComputerController {
     @PostMapping("/{id}/occupy")
     public ComputerResponse occupyComputer(@PathVariable Long id, @Valid @RequestBody OccupyDto dto) {
         return clubService.occupyComputer(id, dto.playerId());
+    }
+
+    @PostMapping("/{id}/transfer")
+    public ComputerResponse transferComputer(@PathVariable Long id, @Valid @RequestBody TransferDto dto) {
+        return clubService.transferComputer(id, dto.targetComputerId(), dto.playerId());
     }
 
     @PostMapping("/{id}/release")

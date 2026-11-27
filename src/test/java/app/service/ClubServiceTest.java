@@ -250,6 +250,35 @@ class ClubServiceTest {
             assertEquals(ComputerStatus.OCCUPIED, afterOccupy.status());
             assertEquals(1, playerAfterOccupy.occupiedComputerIds().size());
         }
+
+        @Test
+        @DisplayName("Атомарная пересадка игрока на другой компьютер (transferComputer)")
+        void transferComputer_shouldAtomicallyMovePlayerToTargetPc() {
+            ComputerResponse pc1 = service.createComputer("PC-01", ComputerType.STANDARD, 100.0);
+            ComputerResponse pc2 = service.createComputer("PC-02", ComputerType.STANDARD, 120.0);
+            PlayerResponse player = service.createPlayer("Gamer", "+79991112233", PlayerType.REGULAR);
+
+            service.occupyComputer(pc1.id(), player.id());
+            assertEquals(ComputerStatus.OCCUPIED, service.getComputer(pc1.id()).status());
+
+            // Пересаживаем игрока с PC-01 на PC-02
+            ComputerResponse transferred = service.transferComputer(pc1.id(), pc2.id(), player.id());
+
+            assertEquals(pc2.id(), transferred.id());
+            assertEquals(ComputerStatus.OCCUPIED, transferred.status());
+            assertEquals(player.id(), transferred.occupiedByPlayerId());
+
+            // Проверяем, что исходный ПК освободился
+            ComputerResponse pc1After = service.getComputer(pc1.id());
+            assertEquals(ComputerStatus.AVAILABLE, pc1After.status());
+            assertNull(pc1After.occupiedByPlayerId());
+
+            // Проверяем, что у игрока активен именно целевой ПК
+            PlayerResponse playerAfter = service.getPlayer(player.id());
+            assertEquals(1, playerAfter.occupiedComputerIds().size());
+            assertTrue(playerAfter.occupiedComputerIds().contains(pc2.id()));
+            assertFalse(playerAfter.occupiedComputerIds().contains(pc1.id()));
+        }
     }
 
     @Nested
@@ -460,6 +489,58 @@ class ClubServiceTest {
                     () -> service.updatePlayer(vip.id(), "VipGamer", "+79991112233", PlayerType.REGULAR));
             assertTrue(ex.getMessage().contains("он сейчас занимает VIP-компьютер"));
         }
+
+        @Test
+        @DisplayName("Пересадка на уже занятый ПК выбрасывает ConflictException и сохраняет исходный ПК занятым")
+        void transferComputer_targetOccupied_shouldThrowConflictExceptionAndPreserveState() {
+            ComputerResponse pc1 = service.createComputer("PC-01", ComputerType.STANDARD, 100.0);
+            ComputerResponse pc2 = service.createComputer("PC-02", ComputerType.STANDARD, 120.0);
+            PlayerResponse p1 = service.createPlayer("Gamer1", "+79991112233", PlayerType.REGULAR);
+            PlayerResponse p2 = service.createPlayer("Gamer2", "+79992223344", PlayerType.REGULAR);
+
+            service.occupyComputer(pc1.id(), p1.id());
+            service.occupyComputer(pc2.id(), p2.id());
+
+            // Попытка пересадить p1 на уже занятый pc2
+            assertThrows(ConflictException.class,
+                    () -> service.transferComputer(pc1.id(), pc2.id(), p1.id()));
+
+            // Исходное состояние должно быть сохранено (All-or-Nothing)
+            assertEquals(ComputerStatus.OCCUPIED, service.getComputer(pc1.id()).status());
+            assertEquals(p1.id(), service.getComputer(pc1.id()).occupiedByPlayerId());
+            assertEquals(p2.id(), service.getComputer(pc2.id()).occupiedByPlayerId());
+        }
+
+        @Test
+        @DisplayName("REGULAR игрок не может пересаживаться на VIP ПК")
+        void transferComputer_regularToVip_shouldThrowConflictException() {
+            ComputerResponse standard = service.createComputer("PC-01", ComputerType.STANDARD, 100.0);
+            ComputerResponse vip = service.createComputer("VIP-01", ComputerType.VIP, 250.0);
+            PlayerResponse regular = service.createPlayer("Regular", "+79991112233", PlayerType.REGULAR);
+
+            service.occupyComputer(standard.id(), regular.id());
+
+            assertThrows(ConflictException.class,
+                    () -> service.transferComputer(standard.id(), vip.id(), regular.id()));
+
+            // Исходный ПК по-прежнему занят
+            assertEquals(ComputerStatus.OCCUPIED, service.getComputer(standard.id()).status());
+        }
+
+        @Test
+        @DisplayName("Пересадка с ПК, который не занят данным игроком, выбрасывает ConflictException")
+        void transferComputer_fromPcNotOccupiedByPlayer_shouldThrowConflictException() {
+            ComputerResponse pc1 = service.createComputer("PC-01", ComputerType.STANDARD, 100.0);
+            ComputerResponse pc2 = service.createComputer("PC-02", ComputerType.STANDARD, 120.0);
+            PlayerResponse p1 = service.createPlayer("Gamer1", "+79991112233", PlayerType.REGULAR);
+            PlayerResponse p2 = service.createPlayer("Gamer2", "+79992223344", PlayerType.REGULAR);
+
+            service.occupyComputer(pc1.id(), p1.id());
+
+            // Игрок p2 пытается "пересесть" с ПК 1, за которым сидит p1
+            assertThrows(ConflictException.class,
+                    () -> service.transferComputer(pc1.id(), pc2.id(), p2.id()));
+        }
     }
 
     @Nested
@@ -526,6 +607,10 @@ class ClubServiceTest {
             assertThrows(ValidationException.class, () -> service.releaseComputer(null));
             assertThrows(ValidationException.class, () -> service.getComputer(null));
             assertThrows(ValidationException.class, () -> service.getPlayer(null));
+            assertThrows(ValidationException.class, () -> service.transferComputer(null, 2L, 1L));
+            assertThrows(ValidationException.class, () -> service.transferComputer(1L, null, 1L));
+            assertThrows(ValidationException.class, () -> service.transferComputer(1L, 2L, null));
+            assertThrows(ValidationException.class, () -> service.transferComputer(1L, 1L, 1L));
         }
 
         @Test
